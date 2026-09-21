@@ -1,0 +1,42 @@
+ARG BUILDPLATFORM
+ARG TARGETPLATFORM
+
+FROM --platform=$BUILDPLATFORM registry.access.redhat.com/ubi9/go-toolset@sha256:685ccca486cc2c82b0818d835abecb1aed7a396e76ba416cfc47c28067f5d365 AS builder
+ARG CGO_ENABLED=1
+ARG GOEXPERIMENT=strictfipsruntime
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+
+USER root
+RUN CGO_ENABLED=${CGO_ENABLED} GOEXPERIMENT=${GOEXPERIMENT} GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -a -trimpath -ldflags="-s -w" -o discovery ./cmd/discovery
+
+FROM --platform=$TARGETPLATFORM registry.access.redhat.com/ubi9/ubi-minimal@sha256:f5984079c023c18ed877db08f82bf2069742dc2de1e48d1368f6a46836963f75
+
+WORKDIR /app
+
+COPY --from=builder /app/discovery .
+
+RUN chmod +x discovery && \
+    chgrp -R 0 /app && \
+    chmod -R g=u /app
+
+USER 1001
+
+EXPOSE 8443
+
+ENTRYPOINT ["./discovery"]
+
+LABEL com.redhat.component="odh-maas-discovery-rhel9" \
+      name="rhoai/odh-maas-discovery-rhel9" \
+      description="odh-maas-discovery" \
+      summary="odh-maas-discovery" \
+      maintainer="['managed-open-data-hub@redhat.com']" \
+      io.openshift.expose-services="" \
+      io.k8s.display-name="odh-maas-discovery" \
+      io.k8s.description="odh-maas-discovery" \
+      com.redhat.license_terms="https://www.redhat.com/licenses/Red_Hat_Standard_EULA_20191108.pdf"
