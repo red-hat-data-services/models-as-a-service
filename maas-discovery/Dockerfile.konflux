@@ -15,7 +15,7 @@ COPY . .
 USER root
 RUN CGO_ENABLED=${CGO_ENABLED} GOEXPERIMENT=${GOEXPERIMENT} GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -a -trimpath -ldflags="-s -w" -o discovery ./cmd/discovery
 
-FROM --platform=$TARGETPLATFORM registry.access.redhat.com/ubi9/ubi-minimal@sha256:9c6d058e39cdbd97c9e0b83c5c394490869dfe96e8f9b3f0fbde0a08f4220adf
+FROM --platform=$TARGETPLATFORM registry.access.redhat.com/ubi9/ubi-minimal@sha256:bc2502169d857732c4ba778f69ed4fa2d25c9ef054a9f7839ac8ce65aedd6574
 
 WORKDIR /app
 
