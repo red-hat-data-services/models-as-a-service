@@ -42,6 +42,15 @@ component enabled (KServe) and properly configured for deploying models with
 
 A specific requirement for MaaS v0.2.0+ is to set up RHOAI Model Serving with Red Hat Connectivity Link (RHCL) v1.3 or later.
 
+## Authorino TLS Configuration (Required)
+
+Authorino must have TLS enabled on its gRPC listener (`listener.tls.enabled: true`) for production deployments. This secures the Gateway → Authorino authentication traffic and protects API credentials in transit.
+
+!!! warning "Do not skip TLS in production"
+    Authorino can operate without TLS, and some examples show `tls.enabled: false` for local development. However, disabling TLS in production exposes API key credentials on the wire between the Gateway and Authorino. Always enable TLS for any non-development deployment.
+
+TLS is configured automatically when using `./scripts/deploy.sh` or `./scripts/setup-authorino-tls.sh`. For manual setup or custom deployments, see [TLS Configuration — Authorino TLS Configuration](../configuration-and-management/tls-configuration.md#authorino-tls-configuration).
+
 ## Optional: Observability Prerequisites
 
 If you plan to use MaaS dashboards, showback, or usage metrics, additional platform configuration is required:
