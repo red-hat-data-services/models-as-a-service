@@ -6,9 +6,10 @@ Complete [Operator Setup](platform-setup.md) before proceeding.
 
 1. [Database Setup](#database-setup) — Create the PostgreSQL connection Secret
 2. [Create Gateway](#create-gateway) — Deploy maas-default-gateway (required before modelsAsService)
-3. [Configure DataScienceCluster](#configure-datasciencecluster) — Enable KServe and modelsAsService in your DataScienceCluster
-4. [Model Setup (On Cluster)](model-setup.md) — Deploy sample models
-5. [Validation](validation.md) — Verify the deployment
+3. [Configure Authorino TLS](#configure-authorino-tls) — Enable TLS on Authorino (required for production)
+4. [Configure DataScienceCluster](#configure-datasciencecluster) — Enable KServe and modelsAsService in your DataScienceCluster
+5. [Model Setup (On Cluster)](model-setup.md) — Deploy sample models
+6. [Validation](validation.md) — Verify the deployment
 
 ## Database Setup
 
@@ -147,6 +148,24 @@ oc label namespace <model-namespace> maas.opendatahub.io/gateway-access=true --o
 ```shell
 kubectl wait --for=condition=Programmed gateway/maas-default-gateway -n openshift-ingress --timeout=60s
 ```
+
+## Configure Authorino TLS
+
+After the Gateway is created, configure TLS on Authorino to secure authentication traffic. This step is **required for production deployments** — see [Prerequisites: Authorino TLS](prerequisites.md#authorino-tls-configuration-required) for background.
+
+Run the setup script:
+
+```bash
+./scripts/setup-authorino-tls.sh
+```
+
+For RHOAI with Red Hat Connectivity Link (RHCL), set the Authorino namespace:
+
+```bash
+AUTHORINO_NAMESPACE=rh-connectivity-link ./scripts/setup-authorino-tls.sh
+```
+
+The script configures both inbound TLS (Gateway → Authorino) and outbound TLS (Authorino → maas-api). For manual configuration or custom deployments, see [TLS Configuration — Authorino TLS Configuration](../configuration-and-management/tls-configuration.md#authorino-tls-configuration).
 
 ## Configure DataScienceCluster
 
