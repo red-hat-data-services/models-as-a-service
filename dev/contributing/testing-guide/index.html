@@ -689,6 +689,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migration/upgrade-to-3.6/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Upgrade to 3.6
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -3027,6 +3055,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#test-ownership-across-the-ai-gateway-stack-aigo-aigc-maas" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Test Ownership Across the AI Gateway Stack (AIGO / AIGC / MaaS)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#checklist-adding-a-new-test" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3730,6 +3769,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#test-ownership-across-the-ai-gateway-stack-aigo-aigc-maas" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Test Ownership Across the AI Gateway Stack (AIGO / AIGC / MaaS)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#checklist-adding-a-new-test" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3831,7 +3881,7 @@
 <a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>└── requirements.txt             # Python dependencies
 </code></pre></div>
 <h3 id="e2e-test-modules-and-groups">E2E Test Modules and Groups</h3>
-<p>Tests are organized into <strong>xdist groups</strong> for parallel execution. Each group runs on a dedicated pytest-xdist worker. See <a href="#parallel-e2e-pytest-xdist">Parallel E2E</a> for details on how groups work.</p>
+<p>Tests are organized into <strong>xdist groups</strong> for parallel execution. All tests in a group run on the same pytest-xdist worker, and a worker takes the next queued group when it finishes one. See <a href="#parallel-e2e-pytest-xdist">Parallel E2E</a> for details on how groups work.</p>
 <table>
 <thead>
 <tr>
@@ -3865,6 +3915,11 @@
 <td><code>readonly</code></td>
 <td><code>test_networkpolicy.py</code></td>
 <td>NetworkPolicy + connectivity checks</td>
+</tr>
+<tr>
+<td><code>readonly</code></td>
+<td><code>test_gateway_filter_chain.py</code></td>
+<td>Gateway filter order (ipp-pre -&gt; auth -&gt; ipp -&gt; endpoint picker); its InferencePool traffic test is <code>serial</code></td>
 </tr>
 <tr>
 <td><code>api_keys</code></td>
@@ -3948,11 +4003,6 @@
 </tr>
 <tr>
 <td><code>tenant_isolation</code></td>
-<td><code>test_tenant_model_inference.py</code></td>
-<td>Cross-gateway inference isolation</td>
-</tr>
-<tr>
-<td><code>tenant_isolation</code></td>
 <td><code>test_tenant_rate_limit_isolation.py</code></td>
 <td>Per-tenant rate limit independence</td>
 </tr>
@@ -3962,9 +4012,19 @@
 <td>Per-tenant subscription scoping</td>
 </tr>
 <tr>
-<td><code>tenant_isolation</code></td>
+<td><code>tenant_inference</code></td>
+<td><code>test_tenant_model_inference.py</code></td>
+<td>Cross-gateway inference isolation</td>
+</tr>
+<tr>
+<td><code>tenant_ipp</code></td>
 <td><code>test_per_tenant_ipp_isolation.py</code></td>
 <td>Per-tenant IPP stacks, routing isolation</td>
+</tr>
+<tr>
+<td><code>tenant_auto_resolve</code></td>
+<td><code>test_tenant_auto_resolve.py</code></td>
+<td>MaaSModelRef tenant auto-resolution from the gateway parentRef</td>
 </tr>
 <tr>
 <td><code>external</code></td>
@@ -4047,9 +4107,11 @@
 <a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="nb">export</span><span class="w"> </span><span class="nv">GATEWAY_HOST</span><span class="o">=</span><span class="s2">&quot;maas.apps.your-cluster.example.com&quot;</span>
 <a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="nb">export</span><span class="w"> </span><span class="nv">E2E_SKIP_TLS_VERIFY</span><span class="o">=</span><span class="nb">true</span>
 <a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>
-<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>pytest<span class="w"> </span>tests/<span class="w"> </span>-v<span class="w">                                    </span><span class="c1"># all tests</span>
-<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>pytest<span class="w"> </span>tests/test_subscription.py<span class="w"> </span>-v<span class="w">                </span><span class="c1"># one module</span>
-<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>pytest<span class="w"> </span>tests/test_api_keys.py::TestAPIKeyCreation<span class="w"> </span>-v<span class="w">  </span><span class="c1"># one class</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="c1"># Mixed-marker modules need separate passes (or use run_e2e_tests.sh for the full suite).</span>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>pytest<span class="w"> </span>tests/<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;not serial&quot;</span><span class="w"> </span>-v
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>pytest<span class="w"> </span>tests/<span class="w"> </span>-m<span class="w"> </span>serial<span class="w"> </span>-v
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>pytest<span class="w"> </span>tests/test_subscription.py<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;not serial&quot;</span><span class="w"> </span>-v
+<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>pytest<span class="w"> </span>tests/test_api_keys.py::TestAPIKeyCRUD<span class="w"> </span>-m<span class="w"> </span><span class="s2">&quot;not serial&quot;</span><span class="w"> </span>-v
 </code></pre></div>
 </div>
 </div>
@@ -4094,18 +4156,18 @@
 </tr>
 <tr>
 <td><code>E2E_PARALLEL_WORKERS</code></td>
-<td>pytest-xdist worker count (default <code>7</code>, one per group). Set to <code>1</code> for serial debugging.</td>
+<td>pytest-xdist worker count for pass 1 (default <code>7</code>). Set to <code>1</code> for single-worker pass 1 without xdist; pass 2 stays serial.</td>
 </tr>
 </tbody>
 </table>
 <p>See <code>test/e2e/tests/conftest.py</code> and individual test module docstrings for the full set of supported variables.</p>
 <h3 id="parallel-e2e-pytest-xdist">Parallel E2E (pytest-xdist)</h3>
-<p>The E2E suite runs in <strong>two passes</strong> with <code>E2E_PARALLEL_WORKERS=7</code> (default):</p>
+<p><code>run_e2e_tests.sh</code> and <code>run-tests-quick.sh</code> run <strong>two marker-filtered passes</strong> by default (default <code>E2E_PARALLEL_WORKERS=7</code>). Use <code>--serial-only</code> to run pass 2 only (<code>-m serial</code>); that mode does not execute non-serial tests. Direct <code>pytest</code> invocations must use the same split when a module mixes <code>@serial</code> and worker-tenant tests.</p>
 <ol>
-<li><strong>Pass 1 (parallel)</strong>: <code>-m "not serial"</code> with <code>--dist=loadgroup -n 7</code> — tests distributed by <code>xdist_group</code> marker, one group per worker</li>
+<li><strong>Pass 1</strong>: <code>-m "not serial"</code> — with <code>--dist=loadgroup -n 7</code> when workers &gt; 1, or single-worker execution when <code>E2E_PARALLEL_WORKERS=1</code></li>
 <li><strong>Pass 2 (serial)</strong>: <code>-m serial</code> — tests that mutate shared cluster state (subscription delete/restore, controller/Kuadrant scaling)</li>
 </ol>
-<p>Set <code>E2E_PARALLEL_WORKERS=1</code> for a single serial pass (useful for debugging).</p>
+<p>Set <code>E2E_PARALLEL_WORKERS=1</code> to disable xdist on pass 1 while keeping the serial/non-serial split (useful for debugging on shared clusters). Pass <code>./run_e2e_tests.sh --serial-only</code> only when intentionally limiting the run to serial mutators.</p>
 <h4 id="xdist-groups">xdist Groups</h4>
 <p>Every test file must have a module-level <code>xdist_group</code> marker:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">pytest</span>
@@ -4126,13 +4188,13 @@
 <p><strong>Read-only tests go in <code>readonly</code></strong>: Tests that only read cluster state (no creates, no deletes, no patches) belong in the <code>readonly</code> group. This group finishes fast and never conflicts with other groups.</p>
 </li>
 <li>
-<p><strong>Self-managing tenant tests go in <code>mt_lifecycle</code> or <code>tenant_isolation</code></strong>: Tests that create their own AITenant CRs belong in one of these groups. <code>mt_lifecycle</code> for lifecycle operations (create/delete/migrate), <code>tenant_isolation</code> for cross-tenant isolation assertions using the <code>shared_test_tenants</code> fixture.</p>
+<p><strong>Self-managing tenant tests go in <code>mt_lifecycle</code> or a <code>tenant_*</code> group</strong>: Tests that create their own AITenant CRs belong in one of these groups. <code>mt_lifecycle</code> for lifecycle operations (create/delete/migrate), <code>tenant_isolation</code> for cross-tenant isolation assertions using the <code>shared_test_tenants</code> fixture. A long isolation module that builds its own tenant pair gets its own group (<code>tenant_inference</code>, <code>tenant_ipp</code>), so its runtime doesn't add to <code>tenant_isolation</code>'s.</p>
 </li>
 <li>
 <p><strong>Externally-gated tests go in <code>external</code></strong>: Tests that require external infrastructure (Keycloak OIDC, external endpoints) and use <code>pytest.mark.skipif</code> to self-gate belong in the <code>external</code> group.</p>
 </li>
 <li>
-<p><strong>Prefer existing groups over new ones</strong>: Adding more groups increases worker count and cluster resource pressure. Only create a new group if the test's mutation scope genuinely conflicts with all existing groups.</p>
+<p><strong>Prefer existing groups over new ones</strong>: Adding more groups increases cluster resource pressure. Only create a new group if the test's mutation scope genuinely conflicts with all existing groups. The exception is wall clock: with <code>--dist=loadgroup</code> pass 1 cannot finish before its longest group, so split a group whose runtime alone sets the pass length, as long as the parts share no tenants or CRs and make no negative assertions (quiet logs, counters) on components the others touch. Pass 1 has more groups than workers: xdist starts the groups with the most tests first and hands the rest to whichever worker drains first, so a long group with few tests starts late.</p>
 </li>
 </ol>
 <h4 id="serial-marker">Serial Marker</h4>
@@ -4275,17 +4337,7 @@
 <p><strong>Add test resources if needed</strong> — if your feature requires new MaaS CRs (models, subscriptions, auth policies), add a kustomize overlay under <code>test/e2e/fixtures/</code> and include it in the base <code>kustomization.yaml</code>.</p>
 </li>
 <li>
-<p><strong>Register new modules in CI</strong> — <code>prow_run_smoke_test.sh</code> runs an <strong>explicit file list</strong>. If you create a new test module, add it to the <code>e2e_test_files</code> array in <code>run_e2e_tests()</code>:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="c1"># In test/e2e/scripts/prow_run_smoke_test.sh, inside run_e2e_tests()</span>
-<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="nb">local</span><span class="w"> </span>-a<span class="w"> </span><span class="nv">e2e_test_files</span><span class="o">=(</span>
-<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">    </span>...
-<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="w">    </span><span class="s2">&quot;</span><span class="nv">$test_dir</span><span class="s2">/tests/test_my_new_feature.py&quot;</span><span class="w">  </span><span class="c1"># ← add here</span>
-<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="o">)</span>
-</code></pre></div>
-<div class="admonition warning">
-<p class="admonition-title">Warning</p>
-<p><code>run-tests-quick.sh</code> auto-discovers all files under <code>tests/</code>, but <code>prow_run_smoke_test.sh</code> does <strong>not</strong>. Your new module will not run in Konflux CI unless you add it to the <code>e2e_test_files</code> array.</p>
-</div>
+<p><strong>Use pytest discovery for CI</strong> — <code>run_e2e_tests.sh</code> collects every <code>test_*.py</code> module under <code>test/e2e/tests/</code>. New modules do not need a separate CI registration step. Give the module an appropriate <code>xdist_group</code> marker and mark cluster-wide mutations as <code>serial</code>.</p>
 </li>
 <li>
 <p><strong>Use skip markers for optional features</strong> — if your test depends on optional infrastructure (e.g., external OIDC, IPP ExternalModel CRD), gate it with <code>pytest.mark.skipif</code> so the same module runs cleanly in all environments.</p>
@@ -4338,6 +4390,39 @@
 </tr>
 </tbody>
 </table>
+<h2 id="test-ownership-across-the-ai-gateway-stack-aigo-aigc-maas">Test Ownership Across the AI Gateway Stack (AIGO / AIGC / MaaS)</h2>
+<p>AI Gateway now spans three repos: <a href="https://github.com/opendatahub-io/ai-gateway-operator">ai-gateway-operator</a> (AIGO), <a href="https://github.com/opendatahub-io/ai-gateway-controller">ai-gateway-controller</a> (AIGC), and this repo (MaaS). Where a test belongs depends on what it needs to observe, not which repo you happen to be changing:</p>
+<table>
+<thead>
+<tr>
+<th>Repo</th>
+<th>Owns</th>
+<th>What it tests</th>
+<th>Test suite</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>AIGO</strong></td>
+<td>Component setup &amp; dependency management</td>
+<td><code>AIGateway</code> CR reconciles to <code>Ready</code>; sibling controller Deployments (<code>maas-controller</code>, <code>ai-gateway-controller</code>, <code>batch-gateway-operator</code>) become <code>Available</code>; aggregate status (<code>ModelsAsAServiceReady</code>, etc.) rolls up correctly. Never the request path.</td>
+<td><code>test/e2e/*_test.go</code> (Go — deploy prereqs, create CR, assert status)</td>
+</tr>
+<tr>
+<td><strong>AIGC</strong></td>
+<td>Deploying the Praxis-backed stack + AIGC's own control-plane logic</td>
+<td>Its own reconciliation logic (<code>pkg/tenant</code>, <code>pkg/render</code>, <code>pkg/controller</code> for ExternalModel/ExternalProvider) via real fixtures. For MaaS-level/request-path behavior, AIGC does <strong>not</strong> write new test content — it fetches and re-runs <strong>this repo's own pytest suite</strong> against its Praxis-backed deployment, pinned via <code>test/maas-e2e.lock</code>, proving the same behavior holds under Praxis as under IPP.</td>
+<td><code>test/kind-env</code>, <code>test/openshift-env</code> (real fixtures) + a vendored copy of <code>test/e2e/tests/</code> from this repo, fetched at a pinned commit</td>
+</tr>
+<tr>
+<td><strong>MaaS</strong> (this repo)</td>
+<td>The single source of truth for MaaS-level resource/request behavior</td>
+<td>Subscription enforcement, auth policy, rate limiting, API-key lifecycle, and anything visible at the MaaS API/Gateway boundary — including OpenAI resource-API routing and identity-header propagation. Written once here, run twice: in-repo against IPP, and via AIGC's vendored fetch against Praxis.</td>
+<td><code>test/e2e/tests/*.py</code> (pytest)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>The upstream-first rule:</strong> if MaaS-level behavior has a coverage gap that's exposed while working in AIGC or AIGO, add the test to <strong>this repo's</strong> <code>test/e2e/tests/</code> first (skip-gated with <code>pytest.mark.skipif</code> if the behavior is genuinely Praxis-only, mirroring the existing <code>EXTERNAL_OIDC</code> skip pattern — see <a href="#group-assignment-rules">Group Assignment Rules</a>), then have the downstream repo bump its pin to pick it up. Don't accept a parallel Go/mock test in AIGO, and don't let a bespoke copy accumulate in AIGC. <a href="https://github.com/opendatahub-io/ai-gateway-controller/pull/37"><code>ai-gateway-controller#37</code></a> is a worked example of this lifecycle: a gap was fixed upstream in MaaS (<a href="https://github.com/opendatahub-io/models-as-a-service/pull/1508">#1508</a>); once it landed, AIGC removed its own side-workarounds and re-pinned <code>test/maas-e2e.lock</code>.</p>
 <h2 id="checklist-adding-a-new-test">Checklist: Adding a New Test</h2>
 <ul class="task-list">
 <li class="task-list-item"><input type="checkbox"/> <strong>Unit test</strong>: Add <code>*_test.go</code> alongside your source in <code>maas-api/</code> or <code>maas-controller/</code>; run <code>make test</code></li>
@@ -4345,7 +4430,7 @@
 <li class="task-list-item"><input type="checkbox"/> <strong>xdist group</strong>: Ensure the test file has a <code>pytestmark = pytest.mark.xdist_group("group_name")</code> marker (see <a href="#group-assignment-rules">group assignment rules</a>)</li>
 <li class="task-list-item"><input type="checkbox"/> <strong>Serial marker</strong>: Add <code>@pytest.mark.serial</code> if the test mutates shared fixtures or scales operators</li>
 <li class="task-list-item"><input type="checkbox"/> <strong>Test fixtures</strong>: If new CRs are needed, add a kustomize overlay in <code>test/e2e/fixtures/</code></li>
-<li class="task-list-item"><input type="checkbox"/> <strong>CI registration</strong>: Add new E2E modules to the <code>e2e_test_files</code> array in <code>prow_run_smoke_test.sh</code></li>
+<li class="task-list-item"><input type="checkbox"/> <strong>Pytest discovery</strong>: Confirm the new module follows the <code>test_*.py</code> naming convention and is collected with <code>pytest tests/ --collect-only -q</code></li>
 <li class="task-list-item"><input type="checkbox"/> <strong>Skip markers</strong>: Use <code>pytest.mark.skipif</code> for tests requiring optional infrastructure</li>
 <li class="task-list-item"><input type="checkbox"/> <strong>Local validation</strong>: Run <code>make test</code> and/or <code>./test/e2e/run-tests-quick.sh</code> before pushing</li>
 <li class="task-list-item"><input type="checkbox"/> <strong>Integration tests</strong>: If your change affects ODH operator integration, update tests in <a href="https://github.com/opendatahub-io/opendatahub-tests">opendatahub-tests</a></li>
@@ -4372,7 +4457,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="August 20, 2026 14:08:17 UTC">August 20, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="October 1, 2026 18:59:39 UTC">October 1, 2026</span>
   </span>
 
     
