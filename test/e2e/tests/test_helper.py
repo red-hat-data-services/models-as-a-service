@@ -391,6 +391,19 @@ def _delete_cr(kind, name, namespace=None):
         log.warning("Failed to delete %s/%s in %s: %s", kind, name, namespace, result.stderr.strip())
 
 
+def _wait_for_cr_absent(kind, name, namespace=None, timeout=30, poll_interval=2):
+    """Wait until a CR is deleted (no longer found by the API server)."""
+    namespace = namespace or _ns()
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _get_cr(kind, name, namespace) is None:
+            return
+        time.sleep(poll_interval)
+    raise TimeoutError(
+        f"{kind}/{name} in {namespace} still exists after {timeout}s"
+    )
+
+
 def _is_transient_kubectl_error(stderr):
     """Check if kubectl error is likely transient (network, timeout)."""
     transient_patterns = [
@@ -633,6 +646,7 @@ def _create_test_subscription(
     window="1m",
     namespace=None,
     priority=None,
+    unlimited=False,
 ):
     """Create a MaaSSubscription CR for testing.
 
@@ -645,6 +659,7 @@ def _create_test_subscription(
         window: Rate limit window (default: "1m")
         namespace: Namespace for the subscription (defaults to _ns())
         priority: Optional spec.priority (higher wins for default API key binding)
+        unlimited: Grant access without a token budget; token_limit and window are ignored
     """
     namespace = namespace or _ns()
     if not isinstance(model_refs, list):
@@ -652,6 +667,7 @@ def _create_test_subscription(
 
     groups_formatted = [{"name": g} for g in (groups or [])]
 
+    budget = {"unlimited": True} if unlimited else {"tokenRateLimits": [{"limit": token_limit, "window": window}]}
     spec = {
         "owner": {
             "users": users or [],
@@ -661,7 +677,7 @@ def _create_test_subscription(
             {
                 "name": ref,
                 "namespace": MODEL_NAMESPACE,
-                "tokenRateLimits": [{"limit": token_limit, "window": window}],
+                **budget,
             }
             for ref in model_refs
         ],
@@ -705,15 +721,16 @@ def _inference(api_key, path=None, extra_headers=None, model_name=None, max_toke
     )
 
 
-def _poll_status(api_key, expected, path=None, extra_headers=None, model_name=None, timeout=None, poll_interval=2):
+def _poll_status(api_key, expected, path=None, extra_headers=None, model_name=None, timeout=None, poll_interval=2, inference_fn=None):
     """Poll inference endpoint until expected HTTP status or timeout."""
+    inference_fn = inference_fn or _inference
     timeout = timeout or max(RECONCILE_WAIT * 3, 60)
     deadline = time.time() + timeout
     last = None
     last_err = None
     while time.time() < deadline:
         try:
-            r = _inference(api_key, path=path, extra_headers=extra_headers, model_name=model_name)
+            r = inference_fn(api_key, path=path, extra_headers=extra_headers, model_name=model_name)
             last_err = None
             ok = r.status_code == expected if isinstance(expected, int) else r.status_code in expected
             if ok:
