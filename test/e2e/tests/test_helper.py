@@ -150,6 +150,13 @@ PREMIUM_MODEL_CANONICAL_ID = os.environ.get(
     f"publishers/{MODEL_NAMESPACE}/models/{PREMIUM_MODEL_NAME}",
 )
 PREMIUM_SIMULATOR_SUBSCRIPTION = os.environ.get("E2E_PREMIUM_SIMULATOR_SUBSCRIPTION", "premium-simulator-subscription")
+ECHO_MODEL_REF = os.environ.get("E2E_ECHO_MODEL_REF", "echo-simulator")
+ECHO_MODEL_NAME = os.environ.get("E2E_ECHO_MODEL_NAME", "test/e2e-echo-model")
+ECHO_MODEL_PATH = os.environ.get("E2E_ECHO_MODEL_PATH", "/llm/echo-simulator")
+ECHO_MODEL_CANONICAL_ID = os.environ.get(
+    "E2E_ECHO_MODEL_CANONICAL_ID",
+    f"publishers/{MODEL_NAMESPACE}/models/{ECHO_MODEL_NAME}",
+)
 SIMULATOR_ACCESS_POLICY = os.environ.get("E2E_SIMULATOR_ACCESS_POLICY", "simulator-access")
 UNCONFIGURED_MODEL_REF = os.environ.get("E2E_UNCONFIGURED_MODEL_REF", "e2e-unconfigured-facebook-opt-125m-simulated")
 UNCONFIGURED_MODEL_PATH = os.environ.get("E2E_UNCONFIGURED_MODEL_PATH", "/llm/e2e-unconfigured-facebook-opt-125m-simulated")
@@ -318,6 +325,7 @@ def kubectl_curl(
             "--restart=Never",
             f"--image={E2E_CURL_IMAGE}",
             "-n", namespace,
+            "--labels=maas-api-e2e-probe=true",
             "--command", "--", "sleep", "300",
         ]
         subprocess.run(create_cmd, capture_output=True, text=True, timeout=30, check=True)
@@ -1093,6 +1101,7 @@ def _create_test_subscription(
     priority=None,
     model_namespace=MODEL_NAMESPACE,
     unlimited=False,
+    inference_priority=None,
 ):
     """Create a MaaSSubscription CR for testing.
 
@@ -1107,6 +1116,7 @@ def _create_test_subscription(
         priority: Optional spec.priority (higher wins for default API key binding)
         model_namespace: Namespace containing the referenced MaaSModelRefs
         unlimited: Grant access without a token budget; token_limit and window are ignored
+        inference_priority: Optional spec.inferencePriority (llm-d flow-control priority)
     """
     namespace = namespace or _ns()
     if not isinstance(model_refs, list):
@@ -1131,6 +1141,8 @@ def _create_test_subscription(
     }
     if priority is not None:
         spec["priority"] = int(priority)
+    if inference_priority is not None:
+        spec["inferencePriority"] = int(inference_priority)
 
     log.info("Creating MaaSSubscription: %s", name)
     _apply_cr(
@@ -1155,6 +1167,8 @@ def _inference(api_key, path=None, extra_headers=None, model_name=None, max_toke
             model_name = PREMIUM_MODEL_NAME
         elif path == UNCONFIGURED_MODEL_PATH:
             model_name = UNCONFIGURED_MODEL_NAME
+        elif path == ECHO_MODEL_PATH:
+            model_name = ECHO_MODEL_NAME
         else:
             model_name = MODEL_NAME
     url = f"{_gateway_url()}{path}/v1/completions"
