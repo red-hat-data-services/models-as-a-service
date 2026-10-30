@@ -40,16 +40,18 @@ paths:
         get:
             tags:
                 - identity
-            summary: Return the verified SSO caller identity
+            summary: Return the authenticated caller identity
             description: |
                 Returns the verified `iss` and `sub` claims, optional profile claims, and all literal
-                organization membership entries from the trusted OIDC identity envelope. Optional
-                claims are returned verbatim when present and nonempty; they are omitted when absent
-                or empty, and are never replaced with `null` or an empty array. The response contains
-                no computed permissions, subscriptions, or inventory. Group claims and organization
-                membership entries are independent literal claims; neither is used to infer or
-                validate the other. API-key and Kubernetes authentication cannot provide this
-                SSO-only response.
+                organization membership entries from the trusted OIDC identity envelope. Other
+                gateway-authenticated callers receive the same response shape with the trusted
+                gateway identity as `sub`, `name`, and `preferred_username`, and the authenticated
+                group list. `iss` is omitted for those callers because they do not provide an OIDC
+                issuer claim. Optional claims are returned verbatim when present and nonempty; they
+                are omitted when absent or empty, and are never replaced with `null` or an empty
+                array. The response contains no computed permissions, subscriptions, or inventory.
+                Group claims and organization membership entries are independent literal claims;
+                neither is used to infer or validate the other.
             operationId: identity#get-me
             responses:
                 "200":
@@ -78,7 +80,7 @@ paths:
                                           - admins
                                     - organization_id: 53d4f57e-3588-55e8-b96c-4ec54a7c42fa
                 "401":
-                    description: Unauthorized. Verified SSO identity is missing or invalid.
+                    description: Unauthorized. Authenticated identity is missing or invalid.
                     content:
                         application/json:
                             schema:
@@ -236,7 +238,15 @@ paths:
             tags:
                 - api-keys-v2
             summary: Create a new hash-based API key
-            description: Creates a new OpenAI-compatible API key (sk-oai-* format). Name is required for regular keys but optional for ephemeral keys. If expiresIn is not provided, defaults to API_KEY_MAX_EXPIRATION_DAYS (default 90 days) for regular keys, or 1 hour for ephemeral keys. The plaintext key is shown ONLY ONCE at creation time and cannot be retrieved again.
+            description: |
+                Creates a new OpenAI-compatible API key (sk-oai-* format). Name is required for
+                regular keys but optional for ephemeral keys. If expiresIn is not provided, defaults
+                to API_KEY_MAX_EXPIRATION_DAYS (default 90 days) for regular keys, or 1 hour for
+                ephemeral keys. The plaintext key is shown ONLY ONCE at creation time and cannot be
+                retrieved again.
+
+                Key creation is self-service and uses the caller's owner entitlement. A delegated
+                subscription administrator cannot create a key on behalf of another user.
             operationId: api-keys-v2#create
             requestBody:
                 required: true
@@ -339,7 +349,16 @@ paths:
             tags:
                 - api-keys-v2
             summary: Search and filter API keys
-            description: Search API keys with flexible filtering, sorting, and pagination. Supports filtering by username (admin-only), status, sorting by multiple fields, and pagination. Ephemeral keys are excluded by default.
+            description: |
+                Search API keys with flexible filtering, sorting, and pagination. Supports filtering
+                by username, status, subscription, sorting by multiple fields, and pagination.
+                Ephemeral keys are excluded by default.
+
+                Regular users can search only their own keys. A verified SSO subscription
+                administrator can search metadata for all users in an explicitly authorized
+                subscription. The subscription filter is canonicalized to its stored plain name
+                before pagination and result counts; omitting it does not broaden a delegated
+                administrator's search to every administered subscription or organization user.
             operationId: api-keys-v2#search
             requestBody:
                 required: false
@@ -353,7 +372,10 @@ paths:
                                     properties:
                                         username:
                                             type: string
-                                            description: Filter by username (admin-only)
+                                            description: Filter by username. Cross-user searches require platform-admin or delegated subscription-admin authorization.
+                                        subscription:
+                                            type: string
+                                            description: Subscription name or namespace/name alias. Delegated administrators must administer this subscription.
                                         status:
                                             type: array
                                             items:
@@ -411,6 +433,17 @@ paths:
                                     pagination:
                                         limit: 20
                                         offset: 0
+                            delegated_admin_search:
+                                summary: Delegated subscription administrator searching an authorized subscription
+                                value:
+                                    filters:
+                                        subscription: "tenant-namespace/subscription-a"
+                                    sort:
+                                        by: "created_at"
+                                        order: "desc"
+                                    pagination:
+                                        limit: 50
+                                        offset: 0
                             include_ephemeral:
                                 summary: Include ephemeral keys in search
                                 value:
@@ -460,8 +493,14 @@ paths:
 
                 **Authorization rules:**
                 - Regular users can bulk revoke their own keys (username = self).
-                - Subscription-scoped revocation requires admin privileges.
-                - Cross-user revocation requires admin privileges.
+                - Subscription-scoped revocation requires platform-admin or delegated
+                  subscription-admin authorization.
+                - Cross-user revocation requires platform-admin authorization, or an explicit
+                  subscription for which the SSO caller has delegated admin authority.
+
+                A username-only request does not authorize a delegated administrator to revoke a
+                user's keys across subscriptions. Dry-run counts and mutations use the same
+                canonical tenant and subscription scope.
 
                 When `dryRun` is true, the response includes the count of keys that
                 would be revoked without performing any mutation.
@@ -481,7 +520,7 @@ paths:
                                     description: Username whose keys should be revoked.
                                 subscription:
                                     type: string
-                                    description: Subscription name whose bound keys should be revoked. Admin-only.
+                                    description: Subscription name or namespace/name alias whose bound keys should be revoked. Delegated administrators must administer this subscription.
                                 dryRun:
                                     type: boolean
                                     default: false
@@ -579,7 +618,10 @@ paths:
             tags:
                 - api-keys-v2
             summary: Get a specific API key by ID
-            description: Returns metadata for a single API key by its ID.
+            description: |
+                Returns metadata for a single API key by its ID. The key owner, a platform
+                administrator, or a verified SSO administrator for the key's stored subscription
+                binding can read this metadata. The original key secret is never returned.
             operationId: api-keys-v2#get
             parameters:
                 - in: path
@@ -603,7 +645,12 @@ paths:
             tags:
                 - api-keys-v2
             summary: Revoke a specific API key
-            description: Revokes a specific API key by changing its status to 'revoked'. The key will no longer be valid for authentication but remains visible in API key lists for audit purposes.
+            description: |
+                Revokes a specific API key by changing its status to 'revoked'. The key will no
+                longer be valid for authentication but remains visible in API key lists for audit
+                purposes. The key owner, a platform administrator, or a verified SSO administrator
+                for the key's stored subscription binding can revoke it. A supplied key ID cannot
+                escape the MaaS Tenant or subscription binding.
             operationId: api-keys-v2#delete
             parameters:
                 - in: path
@@ -1148,22 +1195,23 @@ components:
         CallerIdentity:
             type: object
             description: |
-                Verified SSO identity fields only; no computed permissions or inventory. `iss` and
-                `sub` are always present. Optional scalar and array fields are returned verbatim
-                when present and nonempty, and are omitted otherwise.
+                Caller identity fields without computed permissions or inventory. `sub` is always
+                present. OIDC responses also carry the verified `iss` claim; other
+                gateway-authenticated responses omit `iss`. Optional scalar and array fields are
+                returned verbatim when present and nonempty, and are omitted otherwise.
             properties:
                 iss:
                     type: string
                     format: uri
-                    description: Verified issuer claim
+                    description: Verified OIDC issuer claim. Omitted for other authenticated callers.
                     example: https://issuer.example.com
                 sub:
                     type: string
-                    description: Verified subject claim
+                    description: Verified OIDC subject claim, or trusted gateway identity.
                     example: user-1
                 name:
                     type: string
-                    description: Verified full-name claim. Omitted when absent or empty.
+                    description: Verified OIDC full-name claim, or trusted gateway identity. Omitted when absent or empty.
                     example: Alex User
                 given_name:
                     type: string
@@ -1175,7 +1223,7 @@ components:
                     example: User
                 preferred_username:
                     type: string
-                    description: Verified preferred-username claim. Omitted when absent or empty.
+                    description: Verified OIDC preferred-username claim, or trusted gateway identity. Omitted when absent or empty.
                     example: alex
                 email:
                     type: string
@@ -1185,9 +1233,9 @@ components:
                 groups:
                     type: array
                     description: |
-                        All literal verified group claims. Omitted when the claim is absent or empty.
-                        Group names are independent of organization membership entries and do not
-                        imply an organization role.
+                        All literal verified OIDC group claims, or groups associated with the trusted
+                        gateway identity. Omitted when absent or empty. Group names are independent
+                        of organization membership entries and do not imply an organization role.
                     items:
                         type: string
                     example:
@@ -1200,7 +1248,6 @@ components:
                     items:
                         $ref: '#/components/schemas/OrganizationMembership'
             required:
-                - iss
                 - sub
 
         OrganizationMembership:

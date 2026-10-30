@@ -43,6 +43,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -1275,6 +1276,16 @@ func (r *AITenantReconciler) ensureTenantAPIKeysRevoked(ctx context.Context, ait
 		if !isNotFoundError(err) {
 			return false, fmt.Errorf("get API key revocation Job %s/%s: %w", job.Namespace, job.Name, err)
 		}
+		operandsReady, err := r.prepareRevocationOperands(ctx, aitenant)
+		if err != nil {
+			return false, err
+		}
+		if tenantAPIKeysRevoked(aitenant) {
+			return true, nil
+		}
+		if !operandsReady {
+			return false, nil
+		}
 		if err := r.Create(ctx, job); err != nil {
 			if !isAlreadyExistsError(err) {
 				return false, fmt.Errorf("create API key revocation Job %s/%s: %w", job.Namespace, job.Name, err)
@@ -1324,7 +1335,7 @@ func (r *AITenantReconciler) markTenantAPIKeysRevoked(ctx context.Context, aiten
 	apimeta.SetStatusCondition(&aitenant.Status.Conditions, metav1.Condition{
 		Type:               aitenantAPIKeysRevokedCondition,
 		Status:             metav1.ConditionTrue,
-		Reason:             "RevocationJobCompleted",
+		Reason:             aitenantAPIKeysRevokedReasonJobCompleted,
 		Message:            "Tenant API keys were revoked",
 		ObservedGeneration: aitenant.Generation,
 		LastTransitionTime: metav1.Now(),
@@ -1818,11 +1829,38 @@ func setAITenantPhase(aitenant *maasv1alpha1.AITenant, phase, reason, message st
 	})
 }
 
+// updateAITenantStatus persists the reconciler's desired AITenant status.
+//
+// The desired status is computed from a cached read, and the object's
+// resourceVersion can lose races against concurrent writers on the same
+// AITenant (e.g. the ai-gateway-controller or another maas-controller
+// reconciler). A plain Update then 409s and fails the whole reconcile into
+// backoff, so the phase/Ready stamp the ai-gateway-controller gates on can
+// stay missing for minutes (observed in CI as "AITenant is not DeployReady
+// yet" loops). Retry on conflict with a fresh read so the stamp converges
+// promptly.
 func (r *AITenantReconciler) updateAITenantStatus(ctx context.Context, aitenant *maasv1alpha1.AITenant, statusSnapshot *maasv1alpha1.AITenantStatus) error {
 	if equality.Semantic.DeepEqual(*statusSnapshot, aitenant.Status) {
 		return nil
 	}
-	return r.Status().Update(ctx, aitenant)
+	desired := aitenant.Status.DeepCopy()
+	return retry.OnError(retry.DefaultBackoff, apierrors.IsConflict, func() error {
+		// Read through the APIReader: after a conflict the informer cache can
+		// still serve the stale resourceVersion that just lost the race, which
+		// would make every retry conflict again.
+		live := &maasv1alpha1.AITenant{}
+		if err := r.get(ctx, client.ObjectKeyFromObject(aitenant), live); err != nil {
+			return err
+		}
+		live.Status = *desired
+		if err := r.Status().Update(ctx, live); err != nil {
+			return err
+		}
+		// Keep the in-memory object's resourceVersion fresh so later patches
+		// within the same reconcile do not race the update we just landed.
+		aitenant.ResourceVersion = live.ResourceVersion
+		return nil
+	})
 }
 
 func applyAITenantMetadata(obj client.Object, aitenant *maasv1alpha1.AITenant, tenantNamespace string) {

@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -32,7 +33,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	netwv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
-	extv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -103,6 +103,9 @@ type LifecycleReconciler struct {
 	DiscoveryLogLevel           string
 	DiscoveryNamespace          string
 	DiscoveryReplicas           *int32
+
+	staleResourcesCleanupMu        sync.Mutex
+	staleResourcesCleanupCompleted bool
 }
 
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
@@ -128,8 +131,15 @@ func (r *LifecycleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Older versions left a finalizer on this controller's own Deployment. Remove it
+	// before any setup or teardown step can requeue or fail, so namespace deletion never
+	// waits for this controller to clean up its own workload.
+	if err := r.stripLegacyCleanupFinalizer(ctx, log, req.NamespacedName); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	if dep.DeletionTimestamp.IsZero() {
-		// Strip before anything else so that, if teardown is requested below, Config
+		// Strip before any Config work below so that, if teardown is requested, Config
 		// deletion can never cascade-delete the Deployment via a stale ownerReference
 		// from a pre-self-teardown install.
 		if err := r.stripLegacyDeploymentConfigOwnerReference(ctx, log, req.NamespacedName); err != nil {
@@ -159,13 +169,14 @@ func (r *LifecycleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		} else if res != nil {
 			return *res, nil
 		}
+		// Upgrade cleanup is independent of observability and other module setup.
+		if err := r.cleanupStaleResources(ctx, log); err != nil {
+			return ctrl.Result{}, err
+		}
 		if err := r.ensureObservability(ctx, log); err != nil {
 			return ctrl.Result{}, err
 		}
 		if err := r.ensureDiscoveryService(ctx, log); err != nil {
-			return ctrl.Result{}, err
-		}
-		if err := r.stripLegacyCleanupFinalizer(ctx, log, req.NamespacedName); err != nil {
 			return ctrl.Result{}, err
 		}
 		if cfg != nil {
@@ -179,10 +190,7 @@ func (r *LifecycleReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, nil
 	}
 
-	// Terminating: remove legacy finalizer only so deletion is not blocked.
-	if err := r.stripLegacyCleanupFinalizer(ctx, log, req.NamespacedName); err != nil {
-		return ctrl.Result{}, err
-	}
+	// Terminating: the legacy finalizer was already stripped above.
 	return ctrl.Result{}, nil
 }
 
@@ -224,6 +232,11 @@ func (r *LifecycleReconciler) ensureDefaultAITenantReferencesConfig(ctx context.
 			return nil, nil
 		}
 		return nil, err
+	}
+	if !aitenant.DeletionTimestamp.IsZero() || aitenant.Status.Phase == "Terminating" {
+		log.V(1).Info("skipping Config owner reference on terminating default AITenant",
+			"namespace", r.AITenantNamespace)
+		return nil, nil
 	}
 	if aitenantReferencesConfig(&aitenant, &cfg) {
 		return nil, nil
@@ -384,6 +397,14 @@ func (r *LifecycleReconciler) ensureTenantReferencesConfig(ctx context.Context) 
 			return nil, nil
 		}
 		return nil, err
+	}
+	// Never link a terminating MaasTenantConfig to the current Config. Re-parenting it
+	// is wrong, and the patch fails when its namespace is already gone, which turns
+	// into a reconciler error loop during teardown.
+	if !tenant.DeletionTimestamp.IsZero() {
+		log.Info("default MaasTenantConfig is terminating; skipping Config owner reference link",
+			"namespace", r.TenantSubscriptionNamespace)
+		return nil, nil
 	}
 	if tenantReferencesConfig(&tenant, &cfg) {
 		return nil, nil
@@ -1098,8 +1119,9 @@ func (r *LifecycleReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		).
 		// Re-reconcile when optional operator CRDs (e.g. Perses from COO) are installed
 		// so that resources previously skipped due to missing CRDs are applied immediately.
-		Watches(
-			&extv1.CustomResourceDefinition{},
+		// Metadata-only: avoids caching full CRD objects (50–200KB each with OpenAPI schemas).
+		WatchesMetadata(
+			crdPartialMetadata(),
 			handler.EnqueueRequestsFromMapFunc(func(_ context.Context, _ client.Object) []reconcile.Request {
 				return []reconcile.Request{{NamespacedName: types.NamespacedName{
 					Namespace: r.DeploymentNS,

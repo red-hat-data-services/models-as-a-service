@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	batcv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -39,10 +40,28 @@ func aitenantTestScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(s))
+	utilruntime.Must(appsv1.AddToScheme(s))
 	utilruntime.Must(batcv1.AddToScheme(s))
 	utilruntime.Must(gatewayapiv1.Install(s))
 	utilruntime.Must(maasv1alpha1.AddToScheme(s))
 	return s
+}
+
+func aitenantRevocationOperandObjects(appNS, tenantName string, extra ...client.Object) []client.Object {
+	tenantID := tenantName
+	if tenantName == tenantreconcile.DefaultAITenantName {
+		tenantID = ""
+	}
+	objects := []client.Object{
+		&maasv1alpha1.Config{ObjectMeta: metav1.ObjectMeta{Name: maasv1alpha1.ConfigInstanceName}},
+		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: aitenantAPIKeyCleanupServiceAccountName, Namespace: appNS}},
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: tenantreconcile.MaaSAPIServiceName(tenantID), Namespace: appNS}},
+		&appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: tenantreconcile.MaaSAPIDeploymentName(tenantID), Namespace: appNS},
+			Status:     appsv1.DeploymentStatus{AvailableReplicas: 1},
+		},
+	}
+	return append(objects, extra...)
 }
 
 // TestApplyAITenantMetadata_DoesNotTouchPayloadProcessingTypeAnnotation asserts that
@@ -434,6 +453,82 @@ func TestAITenantReconcile_PersistsGatewayStatusBeforeTenantCreate(t *testing.T)
 	reconcileAITenantToActive(t, r, key)
 }
 
+// TestAITenantReconcile_StatusUpdateRetriesOnConflict reproduces a concurrent
+// writer bumping the AITenant resourceVersion between the reconciler's read and
+// its status write. The status update must re-read the live object and retry
+// instead of failing the reconcile into backoff: a dropped phase/Ready stamp
+// here leaves the ai-gateway-controller reporting "AITenant is not DeployReady
+// yet" and re-applying per-tenant payloads in a loop.
+func TestAITenantReconcile_StatusUpdateRetriesOnConflict(t *testing.T) {
+	g := NewWithT(t)
+	s := aitenantTestScheme(t)
+
+	aitenant := &maasv1alpha1.AITenant{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "team-a",
+			Namespace: tenantreconcile.DefaultAITenantNamespace,
+		},
+	}
+	key := types.NamespacedName{Name: aitenant.Name, Namespace: aitenant.Namespace}
+	gateway := existingAITenantGateway("team-a")
+
+	raced := false
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithStatusSubresource(&maasv1alpha1.AITenant{}).
+		WithObjects(aitenant, gateway).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+				if subResourceName != "status" {
+					return c.SubResource(subResourceName).Update(ctx, obj, opts...)
+				}
+				if at, ok := obj.(*maasv1alpha1.AITenant); ok && at.Name == key.Name && !raced {
+					raced = true
+					// Simulate a concurrent writer on the AITenant (e.g. the
+					// ai-gateway-controller) winning the race: bump the stored
+					// object's resourceVersion so the reconciler's stale-copy
+					// status update conflicts, exactly like a production 409.
+					live := &maasv1alpha1.AITenant{}
+					if err := c.Get(ctx, key, live); err != nil {
+						return err
+					}
+					annotations := live.GetAnnotations()
+					if annotations == nil {
+						annotations = map[string]string{}
+					}
+					annotations["test.opendatahub.io/concurrent-writer"] = "true"
+					live.SetAnnotations(annotations)
+					if err := c.Update(ctx, live); err != nil {
+						return err
+					}
+				}
+				return c.SubResource(subResourceName).Update(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	r := &AITenantReconciler{
+		Client:           cl,
+		Scheme:           s,
+		APIReader:        cl,
+		AppNamespace:     "opendatahub",
+		TenantNamespace:  "models-as-a-service",
+		GatewayNamespace: "openshift-ingress",
+	}
+
+	reconcileAITenantToActive(t, r, key)
+	g.Expect(raced).To(BeTrue(), "interceptor never simulated a concurrent AITenant write; test did not exercise the retry path")
+
+	var updated maasv1alpha1.AITenant
+	g.Expect(cl.Get(context.Background(), key, &updated)).To(Succeed())
+	g.Expect(updated.Status.Phase).To(Equal("Active"))
+	ready := apimeta.FindStatusCondition(updated.Status.Conditions, maasv1alpha1.AITenantConditionReady)
+	g.Expect(ready).NotTo(BeNil())
+	g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(ready.Reason).To(Equal("Reconciled"))
+	// The retry re-reads the live object, so the concurrent writer's change
+	// must survive the status update.
+	g.Expect(updated.Annotations).To(HaveKeyWithValue("test.opendatahub.io/concurrent-writer", "true"))
+}
 func TestAITenantReconcile_DefaultTenantCreatesConfigBeforeGatewayReady(t *testing.T) {
 	g := NewWithT(t)
 	s := aitenantTestScheme(t)
@@ -2386,15 +2481,10 @@ func TestAITenantReconcile_DeletionCreatesAPIKeyRevocationJob(t *testing.T) {
 			},
 		},
 	}
-	maasAPI := tenantTestUnstructured(
-		tenantreconcile.GVKDeployment,
-		"odh-ai-gateway-infra",
-		tenantreconcile.MaaSAPIDeploymentName(aitenant.Name),
-	)
 	cl := fake.NewClientBuilder().
 		WithScheme(s).
-		WithStatusSubresource(&maasv1alpha1.AITenant{}).
-		WithObjects(aitenant, tenant, maasAPI).
+		WithStatusSubresource(&maasv1alpha1.AITenant{}, &appsv1.Deployment{}).
+		WithObjects(aitenantRevocationOperandObjects("odh-ai-gateway-infra", aitenant.Name, aitenant, tenant)...).
 		Build()
 	r := &AITenantReconciler{
 		Client:           cl,
@@ -2436,7 +2526,11 @@ func TestAITenantReconcile_DeletionCreatesAPIKeyRevocationJob(t *testing.T) {
 	g.Expect(containerHasVolumeMount(&job.Spec.Template.Spec.Containers[0], "maas-api-openshift-ca", "/etc/pki/maas-api/openshift")).To(BeTrue())
 	g.Expect(containerHasVolumeMount(&job.Spec.Template.Spec.Containers[0], "maas-api-xks-ca", "/etc/pki/maas-api/xks")).To(BeTrue())
 	g.Expect(cl.Get(ctx, client.ObjectKeyFromObject(tenant), &maasv1alpha1.MaasTenantConfig{})).To(Succeed())
-	g.Expect(cl.Get(ctx, client.ObjectKeyFromObject(maasAPI), maasAPI)).To(Succeed(),
+	var maasAPIDeployment appsv1.Deployment
+	g.Expect(cl.Get(ctx, client.ObjectKey{
+		Namespace: "odh-ai-gateway-infra",
+		Name:      tenantreconcile.MaaSAPIDeploymentName(aitenant.Name),
+	}, &maasAPIDeployment)).To(Succeed(),
 		"maas-api must remain available until API-key revocation completes")
 
 	var updated maasv1alpha1.AITenant
@@ -2582,6 +2676,49 @@ func TestEnsureTenantAPIKeysRevoked_UsesAPIReaderForJobLookup(t *testing.T) {
 	g.Expect(revokedCondition.Status).To(Equal(metav1.ConditionTrue))
 	g.Expect(apiReader.Get(ctx, client.ObjectKeyFromObject(job), &batcv1.Job{})).To(Succeed(),
 		"completed Job must remain as durable proof until AITenant cleanup finishes")
+}
+
+func TestEnsureTenantAPIKeysRevoked_SkipsWhenConfigIsGone(t *testing.T) {
+	g := NewWithT(t)
+	s := aitenantTestScheme(t)
+	ctx := context.Background()
+
+	aitenant := &maasv1alpha1.AITenant{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "team-revoke-skip",
+			Namespace: tenantreconcile.DefaultAITenantNamespace,
+		},
+	}
+	recorder := events.NewFakeRecorder(1)
+	cl := fake.NewClientBuilder().
+		WithScheme(s).
+		WithStatusSubresource(&maasv1alpha1.AITenant{}).
+		WithObjects(aitenant).
+		Build()
+	r := &AITenantReconciler{
+		Client:       cl,
+		Scheme:       s,
+		APIReader:    cl,
+		AppNamespace: "odh-ai-gateway-infra",
+		Recorder:     recorder,
+	}
+
+	revoked, err := r.ensureTenantAPIKeysRevoked(ctx, aitenant)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(revoked).To(BeTrue())
+
+	var updated maasv1alpha1.AITenant
+	g.Expect(cl.Get(ctx, client.ObjectKeyFromObject(aitenant), &updated)).To(Succeed())
+	revokedCondition := apimeta.FindStatusCondition(updated.Status.Conditions, aitenantAPIKeysRevokedCondition)
+	g.Expect(revokedCondition).NotTo(BeNil())
+	g.Expect(revokedCondition.Reason).To(Equal(aitenantAPIKeysRevokedReasonOperandsUnavailable))
+
+	select {
+	case event := <-recorder.Events:
+		g.Expect(event).To(ContainSubstring("APIKeyCleanupSkipped"))
+	default:
+		t.Fatal("expected APIKeyCleanupSkipped warning event")
+	}
 }
 
 func TestEnsureTenantAPIKeysRevoked_RejectsCompletedJobFromPreviousAITenantUID(t *testing.T) {
@@ -3380,9 +3517,10 @@ func TestAITenantReconcile_DeletionTimeoutDoesNotBypassAPIKeyCleanup(t *testing.
 		},
 		Spec: maasv1alpha1.AITenantSpec{},
 	}
+	tenantNamespace := tenantreconcile.TenantNamespaceForAITenant("team-timeout", "models-as-a-service")
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "ai-tenant-team-timeout",
+			Name: tenantNamespace,
 			Labels: map[string]string{
 				aitenantManagedLabel: "true",
 				aiGatewayTenantLabel: "team-timeout",
@@ -3393,12 +3531,23 @@ func TestAITenantReconcile_DeletionTimeoutDoesNotBypassAPIKeyCleanup(t *testing.
 			},
 		},
 	}
+	tenant := &maasv1alpha1.MaasTenantConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      maasv1alpha1.MaasTenantConfigInstanceName,
+			Namespace: tenantNamespace,
+			Labels: map[string]string{
+				tenantreconcile.LabelManagedByAITenant: "true",
+				tenantreconcile.LabelTenantName:        "team-timeout",
+				tenantreconcile.LabelTenantNamespace:   tenantNamespace,
+			},
+		},
+	}
 
 	recorder := events.NewFakeRecorder(10)
 	cl := fake.NewClientBuilder().
 		WithScheme(s).
-		WithStatusSubresource(&maasv1alpha1.AITenant{}).
-		WithObjects(aitenant, ns).
+		WithStatusSubresource(&maasv1alpha1.AITenant{}, &appsv1.Deployment{}).
+		WithObjects(aitenantRevocationOperandObjects("opendatahub", "team-timeout", aitenant, ns, tenant)...).
 		Build()
 	r := &AITenantReconciler{
 		Client:          cl,
@@ -3506,9 +3655,10 @@ func TestAITenantReconcile_DeletionTimeoutDisabledWhenZero(t *testing.T) {
 		},
 		Spec: maasv1alpha1.AITenantSpec{},
 	}
+	tenantNamespace := tenantreconcile.TenantNamespaceForAITenant("team-noforce", "models-as-a-service")
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "ai-tenant-team-noforce",
+			Name: tenantNamespace,
 			Labels: map[string]string{
 				aitenantManagedLabel: "true",
 				aiGatewayTenantLabel: "team-noforce",
@@ -3519,11 +3669,22 @@ func TestAITenantReconcile_DeletionTimeoutDisabledWhenZero(t *testing.T) {
 			},
 		},
 	}
+	tenant := &maasv1alpha1.MaasTenantConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      maasv1alpha1.MaasTenantConfigInstanceName,
+			Namespace: tenantNamespace,
+			Labels: map[string]string{
+				tenantreconcile.LabelManagedByAITenant: "true",
+				tenantreconcile.LabelTenantName:        "team-noforce",
+				tenantreconcile.LabelTenantNamespace:   tenantNamespace,
+			},
+		},
+	}
 
 	cl := fake.NewClientBuilder().
 		WithScheme(s).
-		WithStatusSubresource(&maasv1alpha1.AITenant{}).
-		WithObjects(aitenant, ns).
+		WithStatusSubresource(&maasv1alpha1.AITenant{}, &appsv1.Deployment{}).
+		WithObjects(aitenantRevocationOperandObjects("opendatahub", "team-noforce", aitenant, ns, tenant)...).
 		Build()
 	r := &AITenantReconciler{
 		Client:          cl,

@@ -772,7 +772,6 @@ class TestModelsEndpoint:
                 check=True,
             )
             _wait_for_maas_auth_policy_phase(auth_policy_name, namespace=maas_ns)
-            _wait_for_gateway_auth_enforced()
 
             # Create subscription with the SAME model ref TWICE (guaranteed duplicates)
             log.info(f"Creating subscription with {MODEL_REF} listed twice (to test deduplication)")
@@ -817,8 +816,6 @@ class TestModelsEndpoint:
 
             # Create API key bound to our test subscription
             api_key = _create_api_key(sa_token, name="e2e-dedup-test-key", subscription=subscription_name)
-
-            _wait_for_maas_auth_policy_phase(auth_policy_name, namespace=maas_ns, require_enforced=False)
 
             log.info(f"Querying /v1/models with subscription: {subscription_name}")
             data, _in_subscription = _wait_for_central_models_in_subscription(
@@ -2210,11 +2207,12 @@ class TestModelsEndpoint:
         # Expected: 401 Unauthorized
         log.info("Testing: GET /v1/models without Authorization header")
         url = f"{_maas_api_url()}/v1/models"
-        r = requests.get(
-            url,
-            timeout=TIMEOUT,
-            verify=TLS_VERIFY,
-        )
+        # A plain-text proxy 500 ("Internal Server Error.") is Envoy/router
+        # mid-reload, not a maas-api answer; retry it. A 401 carrying a body is
+        # not in the transient classifier, so the expected answer returns on the
+        # first attempt; only an empty-bodied 401 (AuthPolicy not yet loaded) is
+        # retried, and that settles on a 401 too.
+        r = _request_with_gateway_retry(requests.get, url)
 
         assert r.status_code == 401, f"Expected 401 for unauthenticated request, got {r.status_code}: {r.text}"
 
