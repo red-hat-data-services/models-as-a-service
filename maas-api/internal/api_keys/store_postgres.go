@@ -140,7 +140,6 @@ func (s *PostgresStore) List(ctx context.Context, username string, params Pagina
 	// Fetch limit+1 to determine hasMore
 	fetchLimit := params.Limit + 1
 
-	//nolint:gosec // Dynamic WHERE clause is safe - uses parameterized queries
 	query := fmt.Sprintf(`
 		SELECT id, name, description, subscription, tenant, created_at, expires_at, status, last_used_at, ephemeral
 		FROM api_keys
