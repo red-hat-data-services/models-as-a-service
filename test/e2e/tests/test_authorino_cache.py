@@ -46,7 +46,10 @@ MAX_CACHED_CALLS = REQUEST_COUNT // 2
 
 pytestmark = [
     pytest.mark.xdist_group("authorino_cache"),
-    pytest.mark.serial_exclusive,  # counts maas-api calls across all pods
+    # main uses serial_exclusive (opendatahub-io/models-as-a-service#1802), which
+    # rhoai-3.6 doesn't register. The serial pass here runs on one worker, so the
+    # call counts are just as isolated.
+    pytest.mark.serial,  # counts maas-api calls across all pods
     pytest.mark.full_suite,
 ]
 
